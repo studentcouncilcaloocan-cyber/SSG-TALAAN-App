@@ -10,14 +10,6 @@
   content="width=device-width, initial-scale=1.0"
 >
 
-<link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#17266b">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="SSG TALAAN">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
-
 <title>SSG TALAAN</title>
 
 <script
@@ -3378,7 +3370,7 @@ async function refreshDashboardData() {
    AUTOMATIC CAMERA START
 ===================================================== */
 
-async function openScanner() {
+function openScanner() {
 
   if (
     currentRole !== 'Secretary'
@@ -3393,9 +3385,6 @@ async function openScanner() {
     scannerRestartTimer
   );
 
-  // Fully stop any previous camera instance before rebuilding the scanner view.
-  // This prevents overlapping Html5Qrcode instances and camera lockups.
-  await stopScanner(false);
 
   setActiveNav(
     'navScanner'
@@ -4570,7 +4559,84 @@ function currentSession_() {
 }
 
 /* Replace the original bridge so every protected request carries the session token. */
+function apiRequest(action, params = {}) {
+  return new Promise(function(resolve, reject) {
+    if (!API_URL || API_URL.indexOf('PASTE_YOUR_') === 0) {
+      reject(new Error('Apps Script Web App URL is not configured in INDEX.HTML.'));
+      return;
+    }
 
+    const baseParams = Object.assign({}, params || {});
+    if (!baseParams.token && sessionToken_()) baseParams.token = sessionToken_();
+    const normalizedAction = String(action || '').trim().toLowerCase();
+
+    // A retry is useful for a browser/script transport error. Do not retry a
+    // 30-second timeout: doing so can turn one failure into a 40–60 second wait.
+    // QR records retain requestId so an explicit transport retry remains safe.
+    const retryOnNetworkError = [
+      'dashboard','attendance','searchstudent','warnings','profile',
+      'studentrecord','studentdirectory','accountsettings','login',
+      'studentauth','stafflogin','logout','record'
+    ].indexOf(normalizedAction) !== -1;
+    const maxRetries = retryOnNetworkError ? 1 : 0;
+    const requestId = normalizedAction === 'record'
+      ? (baseParams.requestId || ('rec_' + Date.now() + '_' + Math.random().toString(36).slice(2)))
+      : '';
+    if (requestId) baseParams.requestId = requestId;
+
+    let attempt = 0;
+    function runAttempt() {
+      attempt++;
+      const callbackName='__talaanCallback_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+      const script=document.createElement('script');
+      const query=new URLSearchParams();
+      query.set('action',action);
+      query.set('callback',callbackName);
+      query.set('_t',String(Date.now())+'_'+String(attempt));
+      Object.keys(baseParams).forEach(function(key){
+        const value=baseParams[key];
+        if(value!==undefined&&value!==null)query.set(key,String(value));
+      });
+
+      let finished=false;
+      const cleanup=function(){
+        finished=true;
+        try{delete window[callbackName];}catch(e){window[callbackName]=undefined;}
+        if(script.parentNode)script.parentNode.removeChild(script);
+      };
+      const rejectFinal=function(error){
+        if(finished)return;
+        clearTimeout(timer);
+        cleanup();
+        reject(error);
+      };
+      const timer=setTimeout(function(){
+        // IMPORTANT: no second 30-second wait after a server timeout.
+        rejectFinal(new Error('Apps Script API timed out. Check the Web App deployment and URL.'));
+      },30000);
+
+      window[callbackName]=function(data){
+        if(finished)return;
+        clearTimeout(timer);
+        cleanup();
+        resolve(data);
+      };
+      script.onerror=function(){
+        if(finished)return;
+        clearTimeout(timer);
+        cleanup();
+        if(attempt<=maxRetries){
+          setTimeout(runAttempt,250);
+        }else{
+          reject(new Error('Could not connect to the Apps Script Web App. Check the /exec URL and deployment access.'));
+        }
+      };
+      script.src=API_URL.replace(/\/$/,'')+'?'+query.toString();
+      document.head.appendChild(script);
+    }
+    runAttempt();
+  });
+}
 
 function injectTalaanBranding_() {
   // Use only the small two-logo strip already present on the welcome page.
@@ -6252,11 +6318,36 @@ async function addEvent() {
   } catch(error){alert('❌ Unable to add event.\n\n'+error.message);}
 }
 
+async function refreshDashboardData() {
+  const data = await apiRequest('dashboard', {_t: Date.now()});
+  if (data && data.success === true) {
+    dashboardData = data;
+    return data;
+  }
+  throw new Error(data && data.error ? data.error : 'Unable to refresh TALAAN data.');
+}
 
+function openScanner() {
+  if (currentRole !== 'Secretary') return;
+  renderTalaanMenu_('scanner');
+  closeTalaanMenu_();
+  // Reuse the existing scanner implementation/UI.
+  const content=document.getElementById('dashboardContent');
+  content.innerHTML='<div class="talaan-page"><div class="attendance-card"><h2 class="section-heading">📷 QR Scanner</h2><p class="section-description">Scan the student TALAAN QR code to record attendance.</p><div id="reader"></div><div id="scanLoading" class="status">Starting camera...</div><div id="scanResult" class="result"></div></div></div>';
+  clearTimeout(scannerRestartTimer);stopScanner(false);
+  scannerRestartTimer=setTimeout(function(){if(currentRole==='Secretary')startScanner();},300);
+}
 
-
-
-
+async function onScanSuccess(decodedText) {
+  if (processing || !scanner || !scanning) return;
+  processing=true;
+  const loading=document.getElementById('scanLoading');
+  const result=document.getElementById('scanResult');
+  if(loading)loading.textContent='⏳ QR detected. Processing attendance...';
+  try{if(scanner)scanner.pause(true);}catch(e){}
+  try{const data=await apiRequest('record',{qrText:decodedText});displayResult(data);}catch(error){showScanError(error.message);}
+  setTimeout(async function(){processing=false;if(scanner&&scanning){try{scanner.resume();if(loading)loading.textContent='📷 CAMERA ACTIVE — Ready for next QR code.';}catch(e){await restartScannerAutomatically();}}},250);
+}
 
 function renderHeaderLogo_() {
   const topbar=document.querySelector('.topbar');
@@ -6701,13 +6792,6 @@ async function changeAccountPassword_() {
   }
 }
 </style>
-<script>
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', function () {
-    navigator.serviceWorker.register('sw.js').catch(function () {});
-  });
-}
-</script>
 </body>
 
 </html>
