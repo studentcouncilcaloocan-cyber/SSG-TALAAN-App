@@ -1,15 +1,20 @@
 {
-  "name": "SSG TALAAN Portal",
-  "short_name": "SSG TALAAN",
-  "description": "La Verdad Christian College SSG TALAAN Portal",
-  "start_url": "./index.html",
-  "scope": "./",
+  "name": "SSG TALAAN",
+  "short_name": "TALAAN",
+  "start_url": "./",
   "display": "standalone",
-  "orientation": "portrait-primary",
-  "background_color": "#eef3f9",
-  "theme_color": "#17266b",
+  "background_color": "#ffffff",
+  "theme_color": "#073b70",
   "icons": [
-    {"src":"icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
-    {"src":"icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
   ]
 }
